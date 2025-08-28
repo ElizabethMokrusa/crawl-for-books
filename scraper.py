@@ -3,7 +3,7 @@ import csv
 import undetected_chromedriver as uc
 from bs4 import BeautifulSoup
 import random
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import TimeoutException
@@ -30,7 +30,7 @@ def get_product_detail(soup, label_text):
 
 def scrape_book_details(book_url, driver):
     """
-    Scrapes the 11 data points from a single book page using the corrected selectors.
+    Scrapes the 11 data points from a single book page.
     """
     print(f"  -> Scraping: {book_url}")
     try:
@@ -50,7 +50,8 @@ def scrape_book_details(book_url, driver):
         about_author_div = soup.select_one("details#about-the-author div.content p")
         about_author = about_author_div.get_text(strip=True) if about_author_div else "Not found"
         image_link_tag = soup.select_one("details#resources-and-downloads a[href*='_hr.jpg']")
-        image_link = image_link_tag['href'] if image_link_tag else "Not found"
+        image_link = "https:" + image_link_tag['href'] if image_link_tag and image_link_tag['href'].startswith(
+            '//') else (image_link_tag['href'] if image_link_tag else "Not found")
         publisher_raw = get_product_detail(soup, "Publisher")
         publication_date = "Not found"
         publisher = publisher_raw
@@ -106,9 +107,26 @@ def main():
             search_bar.send_keys(keyword)
             search_bar.send_keys(Keys.RETURN)
 
-            print("Waiting for book results...")
-            wait.until(EC.visibility_of_element_located((By.ID, "search-results-container")))
-            print("Book results loaded successfully.")
+            print("Waiting for initial book results...")
+            results_container = wait.until(EC.visibility_of_element_located((By.ID, "search-results-container")))
+            print("Initial book results loaded.")
+
+            try:
+                print("Attempting to change results per page to 80...")
+                # --- FINAL, CORRECTED SELECTOR for the dropdown ---
+                # This selector specifically finds the dropdown that is visible on desktop
+                results_dropdown = Select(wait.until(EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, "div.is-hidden-mobile select.js-options-recs-per-page"))))
+                results_dropdown.select_by_value("80")
+                print("Successfully set results to 80. Waiting for grid to refresh...")
+
+                # Wait for the old grid to disappear (go stale), then wait for the new one to appear
+                wait.until(EC.staleness_of(results_container))
+                wait.until(EC.visibility_of_element_located((By.ID, "search-results-container")))
+                print("Expanded grid with up to 80 results has loaded.")
+
+            except Exception as e:
+                print(f"Could not change results per page, will scrape default amount. Reason: {e}")
 
             page_source = driver.page_source
             soup = BeautifulSoup(page_source, 'html.parser')
@@ -121,25 +139,16 @@ def main():
             print(f"Found {len(book_list_items)} book items on the page.")
             for item in book_list_items:
                 link_tag = item.find('a', href=True)
-
-                # --- CORRECTED LINK CHECK ---
-                # Check if the link is a full book URL instead of a relative one
                 if link_tag and "/books/" in link_tag['href']:
-                    # The link is already the full URL, no need to add base_url
                     full_url = link_tag['href']
-
                     if full_url not in scraped_urls:
                         scraped_urls.add(full_url)
                         book_data = scrape_book_details(full_url, driver)
                         if book_data:
                             all_scraped_books.append(book_data)
 
-        except TimeoutException:
-            print(f"[TIMEOUT] A timeout occurred for keyword '{keyword}'. Skipping.")
-            driver.save_screenshot(f"debug_timeout_screenshot_{keyword}.png")
-            continue
         except Exception as e:
-            print(f"An error occurred while processing '{keyword}': {e}")
+            print(f"A critical error occurred while processing '{keyword}': {e}")
             continue
 
     driver.quit()
